@@ -1,7 +1,8 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use anyhow::Result;
 use clap::Parser;
+use ffmpeg_sidecar::command::FfmpegCommand;
 use serde::Deserialize;
 
 #[derive(Parser, Debug)]
@@ -23,10 +24,12 @@ struct Args {
 #[tokio::main]
 async fn main() {
 	let args = Args::parse();
-	_ = match fs::create_dir_all(&args.path) {
+	let path = Path::new(&args.path);
+	_ = match fs::create_dir_all(&path) {
 		Ok(val) => val,
 		Err(e) => panic!("failure creating directory {:#?}", e),
 	};
+	ffmpeg_sidecar::download::auto_download().unwrap();
 	if args.all {
 		let albums = match get_all_albums_data().await {
 			Ok(val) => val,
@@ -34,12 +37,12 @@ async fn main() {
 		};
 		println!("{:#?}", albums);
 	} else if args.album_id > 0 {
-		match get_album(&args.path, &args.album_id).await {
+		match get_album(&path, &args.album_id).await {
 			Ok(e) => e,
 			Err(e) => panic!("{}", e),
 		};
 	} else if args.song_id > 0 {
-		match get_song(&args.path, &args.song_id).await {
+		match get_song(&path, &args.song_id).await {
 			Ok(e) => e,
 			Err(e) => panic!("{}", e),
 		};
@@ -93,15 +96,21 @@ struct AlbumSongs {
 	name: String, //song name
 	artistes: Vec<String>,
 }
-async fn get_album(parent_path: &String, album_id: &u64) -> Result<()> {
+async fn get_album(parent_path: &Path, album_id: &u64) -> Result<()> {
 	println!("Getting album {}", album_id);
 	let album_data = get_album_data(album_id).await?;
 	println!("Obtained {:#?} songs", &album_data.data.songs.len());
-	let new_path = format!("{}/{}/", &parent_path, &album_data.data.name);
-	fs::create_dir_all(&new_path)?;
+	let album_path = parent_path.join(album_data.data.name);
+	fs::create_dir_all(&album_path)?;
 	for song in &album_data.data.songs {
-		get_song(&new_path, &song.cid.parse::<u64>().unwrap()).await?;
+		get_song(&album_path, &song.cid.parse::<u64>().unwrap()).await?;
 	}
+	// grab cover image
+	download_file(
+		&album_data.data.coverUrl,
+		&album_path.join("cover.jpg"),
+	)
+	.await?;
 	Ok(())
 }
 async fn get_album_data(album_id: &u64) -> Result<AlbumEntry, reqwest::Error> {
@@ -130,15 +139,11 @@ struct SongData {
 	mvCoverUrl: Option<String>,
 	artists: Vec<String>,
 }
-async fn get_song(parent_path: &String, song_id: &u64) -> Result<()> {
+async fn get_song(parent_path: &Path, song_id: &u64) -> Result<()> {
 	println!("Getting song {}", song_id);
 	let song_data: SongEntry = get_song_data(&song_id).await?;
-	let out_path = format!("{}/{}.wav", parent_path, song_data.data.name);
-	return download_file(
-		&song_data.data.sourceUrl,
-		&out_path,
-	)
-	.await;
+	let out_path = parent_path.join(format!("{}.wav", &song_data.data.name));
+	return download_file(&song_data.data.sourceUrl, &out_path).await;
 	// TODO: convert to flac
 	// TODO: set metadata
 }
@@ -148,8 +153,16 @@ async fn get_song_data(song_id: &u64) -> Result<SongEntry, reqwest::Error> {
 	Ok(resp)
 }
 
-async fn download_file(remote_path: &String, local_path: &String) -> Result<()> {
+async fn download_file(remote_path: &String, local_path: &Path) -> Result<()> {
 	let resp = reqwest::get(remote_path).await?.bytes().await?;
 	let file_write = fs::write(local_path, resp)?;
 	Ok(file_write)
+}
+fn process_wav(input_path: &String, output_path: &String) {
+	FfmpegCommand::new()
+		.input(input_path)
+		.output(output_path)
+		.rawvideo()
+		.spawn()
+		.unwrap();
 }
