@@ -23,24 +23,26 @@ struct Args {
 #[tokio::main]
 async fn main() {
 	let args = Args::parse();
-	fs::create_dir_all("/some/dir")?;
+	_ = match fs::create_dir_all(&args.path) {
+		Ok(val) => val,
+		Err(e) => panic!("failure creating directory {:#?}", e),
+	};
 	if args.all {
-		let albums = match get_all_albums().await {
+		let albums = match get_all_albums_data().await {
 			Ok(val) => val,
 			Err(e) => panic!("failure getting albums {:#?}", e),
 		};
 		println!("{:#?}", albums);
 	} else if args.album_id > 0 {
-		println!("run album {}", args.album_id);
-	} else if args.song_id > 0 {
-		println!("run song {}", args.song_id);
-		let song_data = match get_song(args.song_id).await {
-			Ok(wav) => wav,
+		match get_album(&args.path, &args.album_id).await {
+			Ok(e) => e,
 			Err(e) => panic!("{}", e),
 		};
-		// TODO: write to file
-		let dl_resp = download_file(song_data.data.sourceUrl, "/tmp/test.wav".to_string()).await;
-		println!("{:#?}", dl_resp);
+	} else if args.song_id > 0 {
+		match get_song(&args.path, &args.song_id).await {
+			Ok(e) => e,
+			Err(e) => panic!("{}", e),
+		};
 	} else {
 		// TODO: error out
 		panic!("missing arguments")
@@ -61,11 +63,53 @@ struct AllAlbumsEntry {
 	artistes: Vec<String>,
 }
 
-async fn get_all_albums() -> Result<AllAlbums, reqwest::Error> {
+async fn get_all_albums_data() -> Result<AllAlbums, reqwest::Error> {
 	let resp = reqwest::get("https://monster-siren.hypergryph.com/api/albums")
 		.await?
 		.json::<AllAlbums>()
 		.await?;
+	Ok(resp)
+}
+
+#[derive(Deserialize, Debug)]
+struct AlbumEntry {
+	code: u8,
+	msg: String,
+	data: AlbumData,
+}
+#[derive(Deserialize, Debug)]
+struct AlbumData {
+	cid: String,
+	name: String,       //song name
+	intro: String,      //description?
+	belong: String,     //game?
+	coverUrl: String,   //album cover
+	coverDeUrl: String, //fancy banner
+	songs: Vec<AlbumSongs>,
+}
+#[derive(Deserialize, Debug)]
+struct AlbumSongs {
+	cid: String,
+	name: String, //song name
+	artistes: Vec<String>,
+}
+async fn get_album(parent_path: &String, album_id: &u64) -> Result<()> {
+	println!("Getting album {}", album_id);
+	let album_data = get_album_data(album_id).await?;
+	println!("Obtained {:#?} songs", &album_data.data.songs.len());
+	let new_path = format!("{}/{}/", &parent_path, &album_data.data.name);
+	fs::create_dir_all(&new_path)?;
+	for song in &album_data.data.songs {
+		get_song(&new_path, &song.cid.parse::<u64>().unwrap()).await?;
+	}
+	Ok(())
+}
+async fn get_album_data(album_id: &u64) -> Result<AlbumEntry, reqwest::Error> {
+	let url = format!(
+		"https://monster-siren.hypergryph.com/api/album/{}/detail",
+		album_id
+	);
+	let resp = reqwest::get(url).await?.json::<AlbumEntry>().await?;
 	Ok(resp)
 }
 
@@ -86,13 +130,25 @@ struct SongData {
 	mvCoverUrl: Option<String>,
 	artists: Vec<String>,
 }
-async fn get_song(song_id: u64) -> Result<SongEntry, reqwest::Error> {
+async fn get_song(parent_path: &String, song_id: &u64) -> Result<()> {
+	println!("Getting song {}", song_id);
+	let song_data: SongEntry = get_song_data(&song_id).await?;
+	let out_path = format!("{}/{}.wav", parent_path, song_data.data.name);
+	return download_file(
+		&song_data.data.sourceUrl,
+		&out_path,
+	)
+	.await;
+	// TODO: convert to flac
+	// TODO: set metadata
+}
+async fn get_song_data(song_id: &u64) -> Result<SongEntry, reqwest::Error> {
 	let url = format!("https://monster-siren.hypergryph.com/api/song/{}", song_id);
 	let resp = reqwest::get(url).await?.json::<SongEntry>().await?;
 	Ok(resp)
 }
 
-async fn download_file(remote_path: String, local_path: String) -> Result<()> {
+async fn download_file(remote_path: &String, local_path: &String) -> Result<()> {
 	let resp = reqwest::get(remote_path).await?.bytes().await?;
 	let file_write = fs::write(local_path, resp)?;
 	Ok(file_write)
