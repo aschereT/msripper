@@ -1,5 +1,4 @@
 use std::{
-	ffi::OsStr,
 	fs,
 	path::{Path, PathBuf},
 };
@@ -8,7 +7,7 @@ use anyhow::{Error, Result};
 use clap::Parser;
 use ffmpeg_sidecar::{
 	command::FfmpegCommand,
-	event::{FfmpegEvent, FfmpegProgress},
+	event::FfmpegEvent,
 };
 use serde::Deserialize;
 
@@ -227,23 +226,24 @@ fn process_wav(
 		.input(cover_path.to_str().unwrap())
 		.hide_banner()
 		.no_overwrite()
-		.args(["-metadata", format!("title='{}'", &song.name).as_str()])
-		.args(["-metadata", format!("album='{}'", &album.name).as_str()])
+		.args(["-metadata", format!("title={}", &song.name).as_str()])
+		.args(["-metadata", format!("album={}", &album.name).as_str()])
+		// TODO: add lyrics
 		.args([
 			"-metadata",
 			format!(
-				"lyrics='{}'",
+				"lyrics={}",
 				song.lyricUrl.as_ref().unwrap_or(&String::default())
 			)
 			.as_str(),
 		])
 		.args([
 			"-metadata",
-			format!("artist='{}'", song.artists.join(",")).as_str(),
+			format!("artist={}", song.artists.join(",")).as_str(),
 		])
 		.args([
 			"-metadata",
-			format!("comment='albumCid {}, cid {}'", &album.cid, &song.cid).as_str(),
+			format!("comment=albumCid {}, cid {}", &album.cid, &song.cid).as_str(),
 		])
 		.args(["-disposition:v", "attached_pic"])
 		.output(output_path.to_str().unwrap())
